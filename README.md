@@ -47,6 +47,7 @@ Google Sheet                        MainController
 ```
 AutoStoreSetup/
 ├── main.py                          # CLI entry point (subcommands)
+├── dashboard.py                     # 🌐 Streamlit web dashboard
 ├── generate_sample_data.py          # Generate sample iap_data.xlsx
 ├── requirements.txt                 # Python dependencies
 ├── .env.example                     # Environment config template
@@ -330,6 +331,42 @@ MainController
 | `GooglePlayClient` | IAP + Listing + Screenshot sync to Google Play |
 | `AppStoreClient` | IAP + Listing + Screenshot sync to App Store |
 | `MainController` | Orchestrate: parse → connect → sync → report |
+
+---
+
+## 🌐 Web Dashboard (Streamlit)
+
+Ngoài CLI, bạn có thể dùng **giao diện web** để quản lý store trực quan hơn:
+
+```bash
+# Windows
+.\venv\Scripts\streamlit.exe run dashboard.py
+
+# macOS / Linux
+streamlit run dashboard.py
+```
+
+→ Trình duyệt tự mở tại `http://localhost:8501`
+
+### Dashboard gồm:
+
+| Tab | Chức năng |
+|-----|----------|
+| 🛒 **IAP Sync** | Preview bảng data, metrics (Consumable/Non-Consumable), nút Dry Run / Push |
+| 📝 **Store Listing** | Bảng mẫu format, sync app name/description/keywords |
+| 📸 **Screenshots** | Danh sách device types, upload screenshots bulk |
+| ❓ **Help** | Hướng dẫn setup step-by-step |
+
+### So sánh CLI vs Dashboard
+
+| | CLI | Dashboard |
+|---|---|---|
+| Cài đặt | `.env` file | Điền trực tiếp trên sidebar |
+| Chạy lệnh | Terminal | Bấm nút |
+| Xem data | Log text | Bảng preview + metrics |
+| Kết quả | Log text | Log có màu + summary |
+| Upload file | Chỉ đường dẫn | Kéo thả file |
+| Phù hợp | Developer, CI/CD | Product Team, non-tech |
 
 ---
 
