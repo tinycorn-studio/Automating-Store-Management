@@ -14,6 +14,9 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
+# Valid data source types
+VALID_DATA_SOURCES = {"excel", "gsheet"}
+
 
 @dataclass(frozen=True)
 class Config:
@@ -30,10 +33,25 @@ class Config:
     apple_app_id: str
 
     # Data source
-    iap_data_file: Path
+    data_source: str               # "excel" or "gsheet"
+    iap_data_file: Path            # Used when data_source == "excel"
+    google_sheet_id: str           # Used when data_source == "gsheet"
+    google_sheet_worksheet: str    # Worksheet name (default: first sheet)
 
     # Operation mode
     dry_run: bool = True
+
+    @property
+    def is_gsheet(self) -> bool:
+        return self.data_source == "gsheet"
+
+    @property
+    def source_display_name(self) -> str:
+        """Human-readable name for the current data source."""
+        if self.is_gsheet:
+            ws = self.google_sheet_worksheet or "(first sheet)"
+            return f"Google Sheet [{self.google_sheet_id[:16]}...] / {ws}"
+        return self.iap_data_file.name
 
     def validate(self) -> list[str]:
         """Return a list of validation errors (empty = OK)."""
@@ -58,10 +76,19 @@ class Config:
         if not self.apple_app_id:
             errors.append("APPLE_APP_ID is not set.")
 
-        if not self.iap_data_file.exists():
+        # Data source validation
+        if self.data_source not in VALID_DATA_SOURCES:
             errors.append(
-                f"IAP data file not found: {self.iap_data_file}"
+                f"DATA_SOURCE must be one of {VALID_DATA_SOURCES}, got '{self.data_source}'."
             )
+        elif self.is_gsheet:
+            if not self.google_sheet_id or self.google_sheet_id == "your-spreadsheet-id-here":
+                errors.append("GOOGLE_SHEET_ID is not set (required when DATA_SOURCE=gsheet).")
+        else:
+            if not self.iap_data_file.exists():
+                errors.append(
+                    f"IAP data file not found: {self.iap_data_file}"
+                )
 
         return errors
 
@@ -104,9 +131,12 @@ def load_config(env_path: str | Path | None = None) -> Config:
             os.getenv("APPLE_PRIVATE_KEY_PATH", "./credentials/AuthKey.p8")
         ),
         apple_app_id=os.getenv("APPLE_APP_ID", ""),
+        data_source=os.getenv("DATA_SOURCE", "excel").lower().strip(),
         iap_data_file=_resolve(
             os.getenv("IAP_DATA_FILE", "./iap_data.xlsx")
         ),
+        google_sheet_id=os.getenv("GOOGLE_SHEET_ID", ""),
+        google_sheet_worksheet=os.getenv("GOOGLE_SHEET_WORKSHEET", ""),
         dry_run=os.getenv("DRY_RUN", "true").lower() in ("true", "1", "yes"),
     )
 

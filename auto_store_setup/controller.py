@@ -40,7 +40,13 @@ class MainController:
         self.config = config
         self.platform = platform
 
-        self._parser = DataParser(config.iap_data_file)
+        self._parser = DataParser(
+            file_path=config.iap_data_file,
+            source=config.data_source,
+            google_sheet_id=config.google_sheet_id,
+            google_sheet_worksheet=config.google_sheet_worksheet,
+            service_account_json=config.google_service_account_json,
+        )
 
         self._google: GooglePlayClient | None = None
         self._apple: AppStoreClient | None = None
@@ -116,7 +122,7 @@ class MainController:
         logger.info("╠══════════════════════════════════════════════════════════╣")
         logger.info("║  Mode     : %-44s ║", mode)
         logger.info("║  Platform : %-44s ║", self.platform.name)
-        logger.info("║  Source   : %-44s ║", self.config.iap_data_file.name)
+        logger.info("║  Source   : %-44s ║", self.config.source_display_name)
         logger.info("╚══════════════════════════════════════════════════════════╝")
         logger.info("")
 

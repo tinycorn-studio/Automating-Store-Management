@@ -20,8 +20,14 @@ Usage examples:
     # Force live mode (override .env)
     python main.py --live
 
-    # Specify custom data file
+    # Specify custom data file (Excel)
     python main.py --data ./custom_iap_data.xlsx
+
+    # Read from Google Sheets instead of local Excel
+    python main.py --source gsheet
+
+    # Force local Excel mode
+    python main.py --source excel --data ./my_data.xlsx
 
     # Specify custom .env file
     python main.py --env ./config/.env.production
@@ -78,6 +84,12 @@ def _setup_logging(verbose: bool) -> None:
     help="Force live mode (actual API calls). Overrides .env.",
 )
 @click.option(
+    "--source", "-s",
+    type=click.Choice(["excel", "gsheet"], case_sensitive=False),
+    default=None,
+    help="Data source type. Overrides DATA_SOURCE in .env.",
+)
+@click.option(
     "--data",
     type=click.Path(exists=False),
     default=None,
@@ -100,6 +112,7 @@ def main(
     platform: str,
     dry_run: bool,
     live: bool,
+    source: str | None,
     data: str | None,
     env_path: str | None,
     verbose: bool,
@@ -107,8 +120,8 @@ def main(
     """
     AutoStoreSetup -- Batch IAP Sync Tool
 
-    Reads IAP definitions from an Excel spreadsheet and creates/updates
-    them on Google Play Console and/or Apple App Store Connect.
+    Reads IAP definitions from an Excel file or Google Sheet and
+    creates/updates them on Google Play Console and/or App Store Connect.
     """
     _setup_logging(verbose)
     logger = logging.getLogger("auto_store_setup")
@@ -131,6 +144,9 @@ def main(
         overrides["dry_run"] = True
     elif live:
         overrides["dry_run"] = False
+
+    if source:
+        overrides["data_source"] = source.lower()
 
     if data:
         overrides["iap_data_file"] = Path(data).resolve()

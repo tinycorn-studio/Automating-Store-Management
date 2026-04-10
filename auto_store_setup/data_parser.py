@@ -1,7 +1,9 @@
 """
-DataParser - Reads & validates the IAP spreadsheet.
+DataParser - Reads & validates IAP data from Excel or Google Sheets.
 
-Supports .xlsx files via pandas + openpyxl.
+Supports:
+  - Local .xlsx files via pandas + openpyxl
+  - Google Sheets via gspread + service account
 Returns a list of strongly-typed IAPProduct dataclass instances.
 """
 
@@ -60,16 +62,40 @@ class IAPProduct:
 
 class DataParser:
     """
-    Parses the IAP data spreadsheet and returns validated IAPProduct objects.
+    Parses IAP data and returns validated IAPProduct objects.
+
+    Supports two modes:
+      - **Excel mode**: reads a local .xlsx file
+      - **Google Sheets mode**: reads from a Google Sheet via gspread
 
     Parameters
     ----------
-    file_path : Path
-        Path to the .xlsx file.
+    file_path : Path or None
+        Path to the .xlsx file. Required when source == "excel".
+    source : str
+        "excel" or "gsheet".
+    google_sheet_id : str
+        Google Spreadsheet ID. Required when source == "gsheet".
+    google_sheet_worksheet : str
+        Worksheet name. Empty string = first sheet.
+    service_account_json : Path or None
+        Path to the GCP service account JSON key.
+        Required when source == "gsheet".
     """
 
-    def __init__(self, file_path: Path) -> None:
+    def __init__(
+        self,
+        file_path: Path | None = None,
+        source: str = "excel",
+        google_sheet_id: str = "",
+        google_sheet_worksheet: str = "",
+        service_account_json: Path | None = None,
+    ) -> None:
         self.file_path = file_path
+        self.source = source
+        self.google_sheet_id = google_sheet_id
+        self.google_sheet_worksheet = google_sheet_worksheet
+        self.service_account_json = service_account_json
 
     # --------------------------------------------------------------------- #
     #  Public API                                                            #
@@ -77,22 +103,21 @@ class DataParser:
 
     def parse(self) -> list[IAPProduct]:
         """
-        Read the spreadsheet and return a list of validated IAPProduct items.
+        Read the data source and return a list of validated IAPProduct items.
 
         Raises
         ------
         FileNotFoundError
-            If the spreadsheet does not exist.
+            If the local spreadsheet does not exist (Excel mode).
         ValueError
             If required columns are missing or data validation fails.
+        ConnectionError
+            If Google Sheets cannot be reached (GSheet mode).
         """
-        logger.info("📄 Reading spreadsheet: %s", self.file_path)
-
-        if not self.file_path.exists():
-            raise FileNotFoundError(f"Spreadsheet not found: {self.file_path}")
-
-        df = pd.read_excel(self.file_path, engine="openpyxl")
-        logger.info("   Found %d rows in the spreadsheet.", len(df))
+        if self.source == "gsheet":
+            df = self._read_google_sheet()
+        else:
+            df = self._read_excel()
 
         self._validate_columns(df)
         products = self._build_products(df)
@@ -101,7 +126,72 @@ class DataParser:
         return products
 
     # --------------------------------------------------------------------- #
-    #  Internal helpers                                                      #
+    #  Data source readers                                                   #
+    # --------------------------------------------------------------------- #
+
+    def _read_excel(self) -> pd.DataFrame:
+        """Read from a local .xlsx file."""
+        logger.info("📄 Reading local Excel file: %s", self.file_path)
+
+        if not self.file_path or not self.file_path.exists():
+            raise FileNotFoundError(f"Spreadsheet not found: {self.file_path}")
+
+        df = pd.read_excel(self.file_path, engine="openpyxl")
+        logger.info("   Found %d rows in the spreadsheet.", len(df))
+        return df
+
+    def _read_google_sheet(self) -> pd.DataFrame:
+        """Read from a Google Sheet using gspread + service account."""
+        import gspread
+
+        logger.info(
+            "☁️  Reading Google Sheet: %s (worksheet: %s)",
+            self.google_sheet_id,
+            self.google_sheet_worksheet or "(first sheet)",
+        )
+
+        if not self.service_account_json or not self.service_account_json.exists():
+            raise FileNotFoundError(
+                f"Service account JSON not found: {self.service_account_json}. "
+                "This file is required for Google Sheets access."
+            )
+
+        try:
+            gc = gspread.service_account(filename=str(self.service_account_json))
+            spreadsheet = gc.open_by_key(self.google_sheet_id)
+
+            if self.google_sheet_worksheet:
+                worksheet = spreadsheet.worksheet(self.google_sheet_worksheet)
+            else:
+                worksheet = spreadsheet.sheet1
+
+            records = worksheet.get_all_records()
+
+        except gspread.exceptions.SpreadsheetNotFound:
+            raise ConnectionError(
+                f"Google Sheet not found: '{self.google_sheet_id}'. "
+                "Make sure the spreadsheet is shared with the service account email."
+            )
+        except gspread.exceptions.WorksheetNotFound:
+            raise ValueError(
+                f"Worksheet '{self.google_sheet_worksheet}' not found "
+                f"in spreadsheet '{self.google_sheet_id}'."
+            )
+        except gspread.exceptions.APIError as exc:
+            raise ConnectionError(
+                f"Google Sheets API error: {exc}. "
+                "Check that the Google Sheets API is enabled in your GCP project."
+            )
+
+        if not records:
+            raise ValueError("Google Sheet is empty — no rows found.")
+
+        df = pd.DataFrame(records)
+        logger.info("   Found %d rows in the Google Sheet.", len(df))
+        return df
+
+    # --------------------------------------------------------------------- #
+    #  Validation & building                                                 #
     # --------------------------------------------------------------------- #
 
     @staticmethod
