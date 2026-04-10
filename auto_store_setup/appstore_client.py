@@ -1,14 +1,15 @@
 """
-AppStoreClient - Manages In-App Purchases on Apple App Store Connect.
+AppStoreClient - Manages IAP, Store Listing, and Screenshots on App Store Connect.
 
 Uses the App Store Connect REST API v2 with JWT (ES256) authentication.
-Implements the full Apple IAP creation flow:
-  1. Create the In-App Purchase resource
-  2. Create Localizations (en-US, vi)
-  3. Create / set Price Schedule
+Supports:
+  - In-App Purchase creation (IAP → Localizations → Price Schedule)
+  - Store Listing updates (appInfoLocalizations + appStoreVersionLocalizations)
+  - Screenshot upload (appScreenshotSets + appScreenshots)
 """
 
 import logging
+import os
 import time
 from pathlib import Path
 
@@ -16,6 +17,8 @@ import jwt
 import requests
 
 from .data_parser import IAPProduct
+from .listing_parser import LocalizedListing, StoreListingData
+from .screenshot_parser import ScreenshotEntry, ScreenshotManifest
 
 logger = logging.getLogger(__name__)
 
@@ -512,7 +515,7 @@ class AppStoreClient:
         return None
 
     # --------------------------------------------------------------------- #
-    #  Dry-run logging                                                       #
+    #  IAP Dry-run logging                                                   #
     # --------------------------------------------------------------------- #
 
     def _log_dry_run(self, product: IAPProduct) -> None:
@@ -536,3 +539,378 @@ class AppStoreClient:
             tier,
             ", ".join(locales),
         )
+
+    # ===================================================================== #
+    #  Store Listing                                                        #
+    # ===================================================================== #
+
+    def update_listing(self, listing_data: StoreListingData) -> dict[str, bool]:
+        """
+        Update app store listing for all locales.
+
+        Flow:
+          1. Get the latest editable appStoreVersion
+          2. For each locale, update the appStoreVersionLocalization
+             (description, keywords, promoText, whatsNew)
+          3. Update appInfoLocalizations (app name)
+
+        Returns locale → success mapping.
+        """
+        results: dict[str, bool] = {}
+
+        if self.dry_run:
+            for listing in listing_data.listings:
+                self._log_dry_run_listing(listing)
+                results[listing.locale] = True
+            return results
+
+        # Get the app's editable version
+        version_id = self._get_editable_version_id()
+        if not version_id:
+            logger.error("❌ No editable App Store version found. Create a new version first.")
+            return {l.locale: False for l in listing_data.listings}
+
+        for listing in listing_data.listings:
+            try:
+                ok = self._update_version_localization(version_id, listing)
+                results[listing.locale] = ok
+            except Exception as exc:
+                logger.error("❌ Listing [%s] failed: %s", listing.locale, exc)
+                results[listing.locale] = False
+
+        return results
+
+    def _get_editable_version_id(self) -> str | None:
+        """Get the latest editable (non-live) app store version ID."""
+        url = (
+            f"{_BASE_URL_V1}/apps/{self.app_id}/appStoreVersions"
+            f"?filter[appStoreState]=PREPARE_FOR_SUBMISSION,DEVELOPER_REJECTED,"
+            f"REJECTED,METADATA_REJECTED,WAITING_FOR_REVIEW,IN_REVIEW"
+            f"&limit=1"
+        )
+        resp = self._session.get(url, headers=self._headers())
+
+        if resp.status_code == 200:
+            data = resp.json().get("data", [])
+            if data:
+                version_id = data[0]["id"]
+                version_str = data[0]["attributes"].get("versionString", "?")
+                logger.info("   Found editable version: %s (id=%s)", version_str, version_id)
+                return version_id
+
+        logger.debug("   No editable version found.")
+        return None
+
+    def _update_version_localization(
+        self, version_id: str, listing: LocalizedListing
+    ) -> bool:
+        """Update or create an appStoreVersionLocalization for a locale."""
+        # Find existing localization
+        loc_id = self._find_version_localization(version_id, listing.locale)
+
+        attributes: dict = {}
+        if listing.full_description:
+            attributes["description"] = listing.full_description
+        if listing.keywords:
+            attributes["keywords"] = listing.keywords
+        if listing.promo_text:
+            attributes["promotionalText"] = listing.promo_text
+        if listing.marketing_url:
+            attributes["marketingUrl"] = listing.marketing_url
+        if listing.support_url:
+            attributes["supportUrl"] = listing.support_url
+
+        if loc_id:
+            # PATCH existing
+            body = {
+                "data": {
+                    "type": "appStoreVersionLocalizations",
+                    "id": loc_id,
+                    "attributes": attributes,
+                }
+            }
+            resp = self._session.patch(
+                f"{_BASE_URL_V1}/appStoreVersionLocalizations/{loc_id}",
+                json=body, headers=self._headers(),
+            )
+        else:
+            # POST new
+            attributes["locale"] = listing.locale
+            body = {
+                "data": {
+                    "type": "appStoreVersionLocalizations",
+                    "attributes": attributes,
+                    "relationships": {
+                        "appStoreVersion": {
+                            "data": {"type": "appStoreVersions", "id": version_id}
+                        }
+                    },
+                }
+            }
+            resp = self._session.post(
+                f"{_BASE_URL_V1}/appStoreVersionLocalizations",
+                json=body, headers=self._headers(),
+            )
+
+        if resp.status_code in (200, 201):
+            logger.info("   ✅ Listing [%s] updated on App Store.", listing.locale)
+            return True
+
+        logger.error(
+            "   ❌ Listing [%s] failed: %s %s",
+            listing.locale, resp.status_code, resp.text,
+        )
+        return False
+
+    def _find_version_localization(self, version_id: str, locale: str) -> str | None:
+        """Find an existing appStoreVersionLocalization ID for a locale."""
+        url = (
+            f"{_BASE_URL_V1}/appStoreVersions/{version_id}/appStoreVersionLocalizations"
+            f"?filter[locale]={locale}&limit=1"
+        )
+        resp = self._session.get(url, headers=self._headers())
+        if resp.status_code == 200:
+            data = resp.json().get("data", [])
+            if data:
+                return data[0]["id"]
+        return None
+
+    @staticmethod
+    def _log_dry_run_listing(listing: LocalizedListing) -> None:
+        logger.info(
+            "   [DRY-RUN] App Store Listing [%s]\n"
+            "      App Name          : %s\n"
+            "      Short Description : %s\n"
+            "      Full Description  : %s chars\n"
+            "      Keywords          : %s\n"
+            "      Promo Text        : %s",
+            listing.locale,
+            listing.app_name or "(empty)",
+            listing.short_description[:60] or "(empty)",
+            len(listing.full_description),
+            listing.keywords[:60] or "(empty)",
+            listing.promo_text[:60] or "(empty)",
+        )
+
+    # ===================================================================== #
+    #  Screenshots                                                          #
+    # ===================================================================== #
+
+    def upload_screenshots(self, manifest: ScreenshotManifest) -> dict[str, bool]:
+        """
+        Upload screenshots for all locales and device types.
+
+        Flow per locale/device:
+          1. Get the appStoreVersionLocalization ID
+          2. Create or find appScreenshotSet for the displayType
+          3. For each image: reserve → upload binary → commit
+
+        Returns "locale/device" → success mapping.
+        """
+        results: dict[str, bool] = {}
+
+        if self.dry_run:
+            for locale in manifest.locales:
+                for device in manifest.device_types(locale):
+                    entries = manifest.by_locale_and_device(locale, device)
+                    key = f"{locale}/{device}"
+                    self._log_dry_run_screenshots(locale, device, entries)
+                    results[key] = True
+            return results
+
+        version_id = self._get_editable_version_id()
+        if not version_id:
+            logger.error("❌ No editable version found for screenshot upload.")
+            return {}
+
+        for locale in manifest.locales:
+            loc_id = self._find_version_localization(version_id, locale)
+            if not loc_id:
+                logger.warning("   ⚠️  No version localization for [%s] — skipping.", locale)
+                continue
+
+            for device in manifest.device_types(locale):
+                entries = manifest.by_locale_and_device(locale, device)
+                key = f"{locale}/{device}"
+
+                display_type = entries[0].apple_display_type
+                set_id = self._get_or_create_screenshot_set(loc_id, display_type)
+                if not set_id:
+                    results[key] = False
+                    continue
+
+                all_ok = True
+                for entry in entries:
+                    try:
+                        ok = self._upload_single_screenshot(set_id, entry)
+                        if not ok:
+                            all_ok = False
+                    except Exception as exc:
+                        logger.error(
+                            "      ❌ Screenshot upload failed [%s] #%d: %s",
+                            key, entry.display_order, exc,
+                        )
+                        all_ok = False
+
+                results[key] = all_ok
+
+        return results
+
+    def _get_or_create_screenshot_set(
+        self, loc_id: str, display_type: str
+    ) -> str | None:
+        """Get or create an appScreenshotSet for a display type."""
+        # Try to find existing
+        url = (
+            f"{_BASE_URL_V1}/appStoreVersionLocalizations/{loc_id}/appScreenshotSets"
+            f"?filter[screenshotDisplayType]={display_type}&limit=1"
+        )
+        resp = self._session.get(url, headers=self._headers())
+        if resp.status_code == 200:
+            data = resp.json().get("data", [])
+            if data:
+                return data[0]["id"]
+
+        # Create new
+        body = {
+            "data": {
+                "type": "appScreenshotSets",
+                "attributes": {
+                    "screenshotDisplayType": display_type,
+                },
+                "relationships": {
+                    "appStoreVersionLocalization": {
+                        "data": {
+                            "type": "appStoreVersionLocalizations",
+                            "id": loc_id,
+                        }
+                    }
+                },
+            }
+        }
+        resp = self._session.post(
+            f"{_BASE_URL_V1}/appScreenshotSets",
+            json=body, headers=self._headers(),
+        )
+        if resp.status_code == 201:
+            set_id = resp.json()["data"]["id"]
+            logger.debug("   Created screenshot set: %s (%s)", set_id, display_type)
+            return set_id
+
+        logger.error("   ❌ Failed to create screenshot set [%s]: %s", display_type, resp.text)
+        return None
+
+    def _upload_single_screenshot(self, set_id: str, entry: ScreenshotEntry) -> bool:
+        """
+        Upload a single screenshot to Apple.
+
+        Steps:
+          1. Read file (local) or download (URL)
+          2. Reserve a screenshot resource
+          3. Upload the binary
+          4. Commit
+        """
+        # Read file bytes
+        if entry.is_url:
+            resp = requests.get(entry.file_path, timeout=30)
+            resp.raise_for_status()
+            file_bytes = resp.content
+            file_name = entry.file_path.split("/")[-1] or "screenshot.png"
+        else:
+            path = entry.resolved_path
+            file_bytes = path.read_bytes()
+            file_name = path.name
+
+        file_size = len(file_bytes)
+
+        # Step 1: Reserve
+        reserve_body = {
+            "data": {
+                "type": "appScreenshots",
+                "attributes": {
+                    "fileName": file_name,
+                    "fileSize": file_size,
+                },
+                "relationships": {
+                    "appScreenshotSet": {
+                        "data": {"type": "appScreenshotSets", "id": set_id}
+                    }
+                },
+            }
+        }
+
+        resp = self._session.post(
+            f"{_BASE_URL_V1}/appScreenshots",
+            json=reserve_body, headers=self._headers(),
+        )
+
+        if resp.status_code != 201:
+            logger.error(
+                "      ❌ Reserve failed for %s: %s %s",
+                file_name, resp.status_code, resp.text,
+            )
+            return False
+
+        screenshot_data = resp.json()["data"]
+        screenshot_id = screenshot_data["id"]
+        upload_ops = screenshot_data["attributes"].get("uploadOperations", [])
+
+        # Step 2: Upload binary via the upload operations
+        for op in upload_ops:
+            upload_url = op["url"]
+            headers = {h["name"]: h["value"] for h in op.get("requestHeaders", [])}
+            offset = op.get("offset", 0)
+            length = op.get("length", file_size)
+
+            chunk = file_bytes[offset:offset + length]
+            put_resp = requests.put(upload_url, data=chunk, headers=headers, timeout=60)
+
+            if put_resp.status_code not in (200, 201, 204):
+                logger.error(
+                    "      ❌ Binary upload failed for %s: %s",
+                    file_name, put_resp.status_code,
+                )
+                return False
+
+        # Step 3: Commit
+        commit_body = {
+            "data": {
+                "type": "appScreenshots",
+                "id": screenshot_id,
+                "attributes": {
+                    "uploaded": True,
+                    "sourceFileChecksum": None,  # Apple calculates automatically
+                },
+            }
+        }
+
+        commit_resp = self._session.patch(
+            f"{_BASE_URL_V1}/appScreenshots/{screenshot_id}",
+            json=commit_body, headers=self._headers(),
+        )
+
+        if commit_resp.status_code in (200, 204):
+            logger.info(
+                "      ✅ Uploaded screenshot #%d: %s",
+                entry.display_order, file_name,
+            )
+            return True
+
+        logger.error(
+            "      ❌ Commit failed for %s: %s %s",
+            file_name, commit_resp.status_code, commit_resp.text,
+        )
+        return False
+
+    @staticmethod
+    def _log_dry_run_screenshots(
+        locale: str, device: str, entries: list[ScreenshotEntry],
+    ) -> None:
+        paths = "\n".join(
+            f"         #{e.display_order}: {e.file_path[:60]}" for e in entries
+        )
+        logger.info(
+            "   [DRY-RUN] App Store Screenshots [%s / %s] — %d images\n%s",
+            locale, device, len(entries), paths,
+        )
+

@@ -1,42 +1,44 @@
 # 🚀 Automating Store Management
 
-A Python CLI tool to **batch create and update In-App Purchases (IAP)** on both **Google Play Console** and **Apple App Store Connect** from a **Google Sheet** — the single source of truth for your Product team.
+A Python CLI tool to **automate store setup** on both **Google Play Console** and **Apple App Store Connect** from a **Google Sheet** — the single source of truth for your Product team.
 
-> **No more manual IAP setup.** Your team edits a Google Sheet → runs one command → both stores are updated.
+> **No more manual store setup.** Your team edits a Google Sheet → runs one command → both stores are updated.
 
 ---
 
 ## ✨ Features
 
-- **Google Sheets as source of truth** — Product team edits data online, no file sharing needed
-- **Fallback to local Excel** — Also supports `.xlsx` files when offline
-- **Dual-platform sync** — Google Play + App Store Connect in one command
-- **Dry-run mode** — Preview all changes before making real API calls
-- **Multi-language** — Built-in support for English (en-US) and Vietnamese (vi) localizations
-- **Smart conflict handling** — Automatically detects existing products and updates them
-- **Structured logging** — Clear, timestamped console output for easy tracking
-- **OOP architecture** — Clean separation: `DataParser`, `GooglePlayClient`, `AppStoreClient`, `MainController`
+| Feature | Description |
+|---------|-------------|
+| **IAP Sync** | Batch create/update In-App Purchases on both stores |
+| **Store Listing** | Sync app name, description, keywords across locales |
+| **Screenshot Upload** | Upload screenshots by locale and device type |
+| **Google Sheets** | Product team edits data online, no file sharing needed |
+| **Dual-platform** | Google Play + App Store Connect in one command |
+| **Dry-run mode** | Preview all changes before making real API calls |
+| **Multi-language** | Built-in support for English (en-US) and Vietnamese (vi) |
+| **Offline fallback** | Also supports local `.xlsx` files when not using Sheets |
 
 ---
 
 ## 🔄 How It Works
 
 ```
-┌──────────────┐       ┌──────────────────┐       ┌─────────────────┐
-│              │       │                  │       │  Google Play    │
-│ Google Sheet │──────▶│  AutoStoreSetup  │──────▶│  Console API    │
-│ (IAP Data)   │       │  (Python CLI)    │       │                 │
-│              │       │                  │       ├─────────────────┤
-└──────────────┘       │  1. Parse data   │       │  App Store      │
-                       │  2. Validate     │──────▶│  Connect API    │
-                       │  3. Sync to APIs │       │                 │
-                       └──────────────────┘       └─────────────────┘
+Google Sheet                        MainController
+  ├── Tab: IAP Data      ──────▶     ├── DataParser        ──▶  IAP Products
+  ├── Tab: Store Listing  ─────▶     ├── ListingParser     ──▶  App Metadata
+  └── Tab: Screenshots    ─────▶     └── ScreenshotParser  ──▶  Images
+                                           │
+                               ┌───────────┼───────────┐
+                               ▼                       ▼
+                     GooglePlayClient          AppStoreClient
+                     (Edits API v3)           (REST API v2 / JWT)
 ```
 
 **Workflow for Product Team:**
-1. ✏️ Edit IAP data in the shared Google Sheet
-2. 🔍 Run `python main.py --dry-run` to preview changes
-3. 🚀 Run `python main.py --live` to push to stores
+1. ✏️ Edit data in the shared Google Sheet
+2. 🔍 Run `python main.py iap --dry-run` to preview changes
+3. 🚀 Run `python main.py iap --live` to push to stores
 
 ---
 
@@ -44,18 +46,21 @@ A Python CLI tool to **batch create and update In-App Purchases (IAP)** on both 
 
 ```
 AutoStoreSetup/
-├── main.py                          # CLI entry point
+├── main.py                          # CLI entry point (subcommands)
 ├── generate_sample_data.py          # Generate sample iap_data.xlsx
 ├── requirements.txt                 # Python dependencies
 ├── .env.example                     # Environment config template
-├── .gitignore
+├── docs/
+│   └── ROADMAP.md                   # Expansion roadmap
 ├── credentials/                     # (gitignored) API keys go here
 │   ├── service_account.json         # Google Cloud Service Account
 │   └── AuthKey_XXXXXXXXXX.p8        # Apple API private key
 └── auto_store_setup/
     ├── __init__.py
     ├── config.py                    # Config loader from .env
-    ├── data_parser.py               # Google Sheets / Excel parser + IAPProduct model
+    ├── data_parser.py               # IAP data parser + IAPProduct model
+    ├── listing_parser.py            # Store Listing parser + StoreListingData
+    ├── screenshot_parser.py         # Screenshot manifest parser
     ├── google_play_client.py        # Google Play Android Publisher API v3
     ├── appstore_client.py           # App Store Connect REST API v2 (JWT)
     └── controller.py                # Pipeline orchestrator
@@ -84,7 +89,7 @@ pip install -r requirements.txt
 
 #### Google Cloud Service Account
 
-This single service account is used for **both** Google Play API and Google Sheets API.
+This single service account is used for **Google Play API + Google Sheets API**.
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/) → APIs & Services → Credentials
 2. Create a **Service Account** → Download the JSON key file
@@ -103,30 +108,42 @@ This single service account is used for **both** Google Play API and Google Shee
 
 ### 3. Prepare your Google Sheet
 
-Create a Google Sheet with these exact column headers in Row 1:
+Create a Google Sheet with **3 tabs** (worksheets):
+
+#### Tab 1: `Sheet1` (IAP Data)
 
 | product_id | iap_type | base_price_usd | name_en | desc_en | name_vi | desc_vi |
 |---|---|---|---|---|---|---|
-| `com.studio.game.gem_pack_1` | `consumable` | `0.99` | Gem Pack – Small | 100 gems to boost progress | Gói Kim Cương – Nhỏ | 100 kim cương |
-| `com.studio.game.no_ads` | `non-consumable` | `2.99` | Remove Ads | Remove all ads permanently | Xóa Quảng Cáo | Xóa vĩnh viễn quảng cáo |
+| com.studio.game.gem_pack_1 | consumable | 0.99 | Gem Pack – Small | 100 gems | Gói Kim Cương – Nhỏ | 100 kim cương |
+| com.studio.game.no_ads | non-consumable | 2.99 | Remove Ads | Remove all ads | Xóa Quảng Cáo | Xóa quảng cáo |
 
-**Column Reference:**
+#### Tab 2: `Store Listing`
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `product_id` | string | Unique IAP ID (e.g. `com.studio.game.gem_pack_1`) |
-| `iap_type` | string | `consumable` or `non-consumable` |
-| `base_price_usd` | decimal | Base price in USD (e.g. `0.99`, `4.99`) |
-| `name_en` | string | Display name in English |
-| `desc_en` | string | Description in English |
-| `name_vi` | string | Display name in Vietnamese |
-| `desc_vi` | string | Description in Vietnamese |
+| field | en-US | vi |
+|-------|-------|-----|
+| app_name | Water Go Puzzle | Water Go - Xếp Hình |
+| short_description | Fun water puzzle game! | Trò chơi xếp hình nước! |
+| full_description | (long text...) | (text dài...) |
+| keywords | puzzle,water,game | xếp hình,nước,game |
+| promo_text | New levels available! | Có màn mới! |
+| support_url | https://support.example.com | https://support.example.com |
+| marketing_url | https://www.example.com | https://www.example.com |
+
+#### Tab 3: `Screenshots`
+
+| locale | device_type | display_order | file_path |
+|--------|-------------|---------------|-----------|
+| en-US | phone_6.5 | 1 | ./screenshots/en/phone_01.png |
+| en-US | phone_6.5 | 2 | ./screenshots/en/phone_02.png |
+| vi | phone_6.5 | 1 | ./screenshots/vi/phone_01.png |
+| en-US | tablet_12.9 | 1 | ./screenshots/en/tablet_01.png |
+
+**Supported device types:** `phone`, `phone_5.5`, `phone_6.5`, `phone_6.7`, `tablet`, `tablet_7`, `tablet_10`, `tablet_12.9`, `tv`, `wear`
 
 **Important:** Share the Google Sheet with your service account email:
 ```
 your-sa-name@your-project.iam.gserviceaccount.com
 ```
-Grant **Viewer** permission (read-only is sufficient).
 
 > 💡 Find your service account email in `credentials/service_account.json` → `"client_email"` field.
 
@@ -139,7 +156,7 @@ cp .env.example .env
 Edit `.env` with your actual values:
 
 ```env
-# --- Data Source (Google Sheets) ---
+# --- Data Source ---
 DATA_SOURCE=gsheet
 GOOGLE_SHEET_ID=1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms
 GOOGLE_SHEET_WORKSHEET=Sheet1
@@ -158,20 +175,20 @@ APPLE_APP_ID=1234567890
 DRY_RUN=true
 ```
 
-**How to get `GOOGLE_SHEET_ID`:**
-```
-https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms/edit
-                                       └──────────── This is your SHEET ID ────────────┘
-```
-
 ### 5. Run!
 
 ```bash
-# Step 1: Always dry-run first to preview
-python main.py
+# IAP: preview first
+python main.py iap --dry-run
 
-# Step 2: When ready, push to stores
-python main.py --live
+# IAP: push to stores
+python main.py iap --live
+
+# Store Listing: update metadata
+python main.py listing --dry-run
+
+# Screenshots: upload images
+python main.py screenshots --dry-run
 ```
 
 ---
@@ -179,55 +196,71 @@ python main.py --live
 ## 🔧 CLI Reference
 
 ```
-Usage: main.py [OPTIONS]
+Usage: main.py [OPTIONS] COMMAND [ARGS]...
 
-Options:
-  -p, --platform [google|apple|both]   Target platform(s)          [default: both]
-  -s, --source [excel|gsheet]          Data source type             [from .env]
+Global Options:
+  -s, --source [excel|gsheet]    Data source type (overrides .env)
+  --env PATH                     Custom .env file path
+  -v, --verbose                  Debug logging
+  -h, --help                     Show help
+
+Commands:
+  iap           Sync In-App Purchases
+  listing       Sync Store Listing metadata
+  screenshots   Upload app screenshots
+
+Subcommand Options (shared):
+  -p, --platform [google|apple|both]   Target platform(s)    [default: both]
   -d, --dry-run                        Force dry-run mode
-  -l, --live                           Force live mode (real API calls)
-  --data PATH                          Custom .xlsx file path (Excel mode)
-  --env PATH                           Custom .env file path
-  -v, --verbose                        Debug logging
-  -h, --help                           Show help
+  -l, --live                           Force live mode
 ```
 
 ### Common commands
 
 ```bash
-# Dry-run, both platforms, from Google Sheet (default)
-python main.py
+# ── IAP ──────────────────────────────────────
+python main.py iap                          # Dry-run, both platforms
+python main.py iap --platform google        # Google Play only
+python main.py iap --platform apple --live  # Apple only, live mode
+python main.py iap --data ./custom.xlsx     # Use local Excel file
 
-# Sync only Google Play
-python main.py --platform google
+# ── Store Listing ────────────────────────────
+python main.py listing                      # Preview listing changes
+python main.py listing --live               # Push to both stores
 
-# Sync only Apple App Store
-python main.py --platform apple
+# ── Screenshots ──────────────────────────────
+python main.py screenshots                  # Preview screenshot upload
+python main.py screenshots --live           # Upload to both stores
 
-# Use a local Excel file instead of Google Sheet
-python main.py --source excel --data ./iap_data.xlsx
-
-# Live mode — actually push to stores
-python main.py --live
-
-# Verbose/debug output
-python main.py -v --dry-run
+# ── Global options ───────────────────────────
+python main.py --source excel iap           # Force Excel mode
+python main.py -v listing                   # Verbose logging
 ```
 
 ---
 
 ## 🔄 API Flow
 
-### Google Play
-1. Authenticate with Service Account
-2. For each product: try `update()` → if 404 → `insert()` (create new)
-3. Maps locales to `listings` structure (`en-US`, `vi`)
+### IAP Sync
+| Google Play | Apple App Store |
+|-------------|-----------------|
+| Service Account auth | JWT ES256 auth |
+| Try `update()` → if 404 → `insert()` | Create IAP → Localizations → Price Schedule |
+| `edits().inappproducts()` API | `/v2/inAppPurchases` + `/v1/inAppPurchaseLocalizations` |
 
-### Apple App Store Connect
-1. Generate JWT token (ES256) from `.p8` key
-2. **Step 1:** Create IAP resource via `/v2/inAppPurchases`
-3. **Step 2:** Create Localizations for each language (en-US, vi)
-4. **Step 3:** Set Price Schedule with matching Apple price tier
+### Store Listing
+| Google Play | Apple App Store |
+|-------------|-----------------|
+| Create Edit session | Get editable `appStoreVersion` |
+| `edits().listings().update()` per locale | `PATCH /v1/appStoreVersionLocalizations` |
+| Commit Edit | Auto-saved |
+
+### Screenshots
+| Google Play | Apple App Store |
+|-------------|-----------------|
+| Create Edit session | Find `appStoreVersionLocalization` |
+| `edits().images().upload()` | Create `appScreenshotSet` → Reserve → Upload binary → Commit |
+| Commit Edit | Auto-processed |
 
 ---
 
@@ -238,8 +271,9 @@ python main.py -v --dry-run
 | Product already exists | Auto-update (Google) / Find & reuse ID (Apple 409) |
 | Google Sheet not shared | Clear error: "Share with service account email" |
 | Worksheet not found | Error with worksheet name |
-| Network error | Log error, continue with next product |
-| Invalid price | Warning, skip pricing step |
+| Screenshot file missing | Warning, skip file, continue with rest |
+| No editable version (Apple) | Error message: "Create a new version first" |
+| Network error | Log error, continue with next item |
 | JWT expired | Auto-refresh token (Apple) |
 | Missing columns | `ValueError` with list of missing column names |
 
@@ -251,7 +285,7 @@ python main.py -v --dry-run
 |----------|----------|-------------|
 | `DATA_SOURCE` | Yes | `gsheet` (recommended) or `excel` |
 | `GOOGLE_SHEET_ID` | If gsheet | Spreadsheet ID from the Google Sheets URL |
-| `GOOGLE_SHEET_WORKSHEET` | No | Worksheet/tab name (default: first sheet) |
+| `GOOGLE_SHEET_WORKSHEET` | No | IAP worksheet name (default: first sheet) |
 | `IAP_DATA_FILE` | If excel | Path to local `.xlsx` file |
 | `GOOGLE_PLAY_PACKAGE_NAME` | Yes | Android package name |
 | `GOOGLE_SERVICE_ACCOUNT_JSON` | Yes | Path to GCP service account JSON key |
@@ -270,14 +304,18 @@ Config (.env)
     │
     ▼
 MainController
-    ├── DataParser
-    │     ├── Google Sheets (gspread + service account)
-    │     └── Local Excel (pandas + openpyxl)
-    │           ▼
-    │     List[IAPProduct]
+    ├── DataParser ──────────▶ List[IAPProduct]
+    │     ├── Google Sheets (gspread)
+    │     └── Local Excel (pandas)
+    │
+    ├── ListingParser ───────▶ StoreListingData
+    │     └── (same dual source)
+    │
+    ├── ScreenshotParser ────▶ ScreenshotManifest
+    │     └── (same dual source)
     │
     ├── GooglePlayClient
-    │     └── Android Publisher API v3
+    │     └── Android Publisher API v3 (Edits API)
     │
     └── AppStoreClient
           └── App Store Connect REST API v2 (JWT/ES256)
@@ -286,10 +324,11 @@ MainController
 | Class | Responsibility |
 |-------|---------------|
 | `Config` | Load & validate `.env` settings |
-| `DataParser` | Read Google Sheet or Excel → `List[IAPProduct]` |
-| `IAPProduct` | Typed data model for a single IAP |
-| `GooglePlayClient` | Authenticate & sync to Google Play |
-| `AppStoreClient` | JWT auth & 3-step sync to App Store |
+| `DataParser` | Read IAP data → `List[IAPProduct]` |
+| `ListingParser` | Read Store Listing → `StoreListingData` |
+| `ScreenshotParser` | Read manifest → `ScreenshotManifest` |
+| `GooglePlayClient` | IAP + Listing + Screenshot sync to Google Play |
+| `AppStoreClient` | IAP + Listing + Screenshot sync to App Store |
 | `MainController` | Orchestrate: parse → connect → sync → report |
 
 ---

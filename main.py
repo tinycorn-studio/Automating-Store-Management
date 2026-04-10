@@ -5,36 +5,28 @@ AutoStoreSetup — CLI Entry Point
 
 Usage examples:
 
-    # Dry-run (default, reads DRY_RUN from .env)
-    python main.py
+    # IAP sync (dry-run by default)
+    python main.py iap
+    python main.py iap --platform google
+    python main.py iap --live
 
-    # Sync only Google Play
-    python main.py --platform google
+    # Store Listing sync
+    python main.py listing
+    python main.py listing --platform apple
 
-    # Sync only Apple App Store
-    python main.py --platform apple
+    # Screenshot upload
+    python main.py screenshots
+    python main.py screenshots --live
 
-    # Force dry-run regardless of .env
-    python main.py --dry-run
-
-    # Force live mode (override .env)
-    python main.py --live
-
-    # Specify custom data file (Excel)
-    python main.py --data ./custom_iap_data.xlsx
-
-    # Read from Google Sheets instead of local Excel
-    python main.py --source gsheet
-
-    # Force local Excel mode
-    python main.py --source excel --data ./my_data.xlsx
-
-    # Specify custom .env file
-    python main.py --env ./config/.env.production
+    # Global options
+    python main.py --source gsheet iap
+    python main.py --env ./config/.env.production listing
+    python main.py --verbose screenshots
 """
 
 import logging
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import click
@@ -42,47 +34,28 @@ import click
 from auto_store_setup.config import load_config
 from auto_store_setup.controller import MainController, Platform
 
+# ──────────────────────────────────────────────────────────────────────── #
+#  Logging Setup                                                          #
+# ──────────────────────────────────────────────────────────────────────── #
 
-def _setup_logging(verbose: bool) -> None:
-    """Configure structured logging with timestamps and colours."""
+def _setup_logging(verbose: bool = False) -> None:
     level = logging.DEBUG if verbose else logging.INFO
-
-    fmt = "%(asctime)s │ %(levelname)-7s │ %(message)s"
-    datefmt = "%H:%M:%S"
-
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
+    handler.setLevel(level)
+    fmt = "%(asctime)s | %(levelname)-7s | %(message)s"
+    handler.setFormatter(logging.Formatter(fmt, datefmt="%H:%M:%S"))
 
-    root = logging.getLogger()
+    root = logging.getLogger("auto_store_setup")
     root.setLevel(level)
-    root.addHandler(handler)
-
-    # Suppress noisy third-party loggers
-    logging.getLogger("googleapiclient").setLevel(logging.WARNING)
-    logging.getLogger("google.auth").setLevel(logging.WARNING)
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    if not root.handlers:
+        root.addHandler(handler)
 
 
-@click.command(context_settings={"help_option_names": ["-h", "--help"]})
-@click.option(
-    "--platform", "-p",
-    type=click.Choice(["google", "apple", "both"], case_sensitive=False),
-    default="both",
-    show_default=True,
-    help="Target platform(s) to sync.",
-)
-@click.option(
-    "--dry-run", "-d",
-    is_flag=True,
-    default=False,
-    help="Force dry-run mode (no API calls). Overrides .env.",
-)
-@click.option(
-    "--live", "-l",
-    is_flag=True,
-    default=False,
-    help="Force live mode (actual API calls). Overrides .env.",
-)
+# ──────────────────────────────────────────────────────────────────────── #
+#  CLI Group                                                              #
+# ──────────────────────────────────────────────────────────────────────── #
+
+@click.group(context_settings={"help_option_names": ["-h", "--help"]}, invoke_without_command=True)
 @click.option(
     "--source", "-s",
     type=click.Choice(["excel", "gsheet"], case_sensitive=False),
@@ -90,14 +63,7 @@ def _setup_logging(verbose: bool) -> None:
     help="Data source type. Overrides DATA_SOURCE in .env.",
 )
 @click.option(
-    "--data",
-    type=click.Path(exists=False),
-    default=None,
-    help="Path to the IAP data spreadsheet (.xlsx). Overrides .env.",
-)
-@click.option(
-    "--env",
-    "env_path",
+    "--env", "env_path",
     type=click.Path(exists=True),
     default=None,
     help="Path to the .env configuration file.",
@@ -108,38 +74,63 @@ def _setup_logging(verbose: bool) -> None:
     default=False,
     help="Enable verbose/debug logging.",
 )
-def main(
-    platform: str,
-    dry_run: bool,
-    live: bool,
-    source: str | None,
-    data: str | None,
-    env_path: str | None,
-    verbose: bool,
-) -> None:
+@click.pass_context
+def cli(ctx: click.Context, source: str | None, env_path: str | None, verbose: bool) -> None:
     """
-    AutoStoreSetup -- Batch IAP Sync Tool
+    AutoStoreSetup -- Batch Store Management Tool
 
-    Reads IAP definitions from an Excel file or Google Sheet and
-    creates/updates them on Google Play Console and/or App Store Connect.
+    Manages IAP, Store Listings, and Screenshots on both
+    Google Play Console and Apple App Store Connect.
     """
     _setup_logging(verbose)
+    ctx.ensure_object(dict)
+    ctx.obj["source"] = source
+    ctx.obj["env_path"] = env_path
+    ctx.obj["verbose"] = verbose
+
+    # If no subcommand given, show help
+    if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
+
+
+# ──────────────────────────────────────────────────────────────────────── #
+#  Shared option decorators                                               #
+# ──────────────────────────────────────────────────────────────────────── #
+
+def _platform_options(func):
+    """Common options for all subcommands."""
+    func = click.option(
+        "--platform", "-p",
+        type=click.Choice(["google", "apple", "both"], case_sensitive=False),
+        default="both",
+        help="Target platform(s) to sync.",
+    )(func)
+    func = click.option(
+        "--dry-run", "-d",
+        is_flag=True,
+        default=False,
+        help="Force dry-run mode (no API calls). Overrides .env.",
+    )(func)
+    func = click.option(
+        "--live", "-l",
+        is_flag=True,
+        default=False,
+        help="Force live mode (actual API calls). Overrides .env.",
+    )(func)
+    return func
+
+
+def _build_controller(ctx: click.Context, platform: str, dry_run: bool, live: bool) -> MainController:
+    """Load config, apply overrides, build controller."""
     logger = logging.getLogger("auto_store_setup")
 
-    # --- Load config ---
-    try:
-        config = load_config(env_path)
-    except Exception as exc:
-        logger.error("❌ Failed to load configuration: %s", exc)
-        sys.exit(1)
+    env_path = ctx.obj.get("env_path")
+    source = ctx.obj.get("source")
 
-    # --- Apply CLI overrides ---
+    config = load_config(env_path)
+
+    # Apply overrides
     overrides: dict = {}
-
-    if dry_run and live:
-        logger.error("❌ Cannot specify both --dry-run and --live.")
-        sys.exit(1)
-
     if dry_run:
         overrides["dry_run"] = True
     elif live:
@@ -148,43 +139,60 @@ def main(
     if source:
         overrides["data_source"] = source.lower()
 
-    if data:
-        overrides["iap_data_file"] = Path(data).resolve()
-
     if overrides:
-        # Rebuild config with overrides (frozen dataclass requires replacement)
-        from dataclasses import asdict
-        merged = {**asdict(config), **overrides}
-        from auto_store_setup.config import Config
-        config = Config(**merged)
+        config = replace(config, **overrides)
 
-    # --- Validate ---
+    # Validate
     errors = config.validate()
     if errors:
-        logger.error("❌ Configuration errors:")
-        for err in errors:
-            logger.error("   • %s", err)
-        sys.exit(1)
+        for e in errors:
+            logger.error("  Config error: %s", e)
+        raise click.Abort()
 
-    # --- Map platform ---
-    platform_map = {
-        "google": Platform.GOOGLE,
-        "apple": Platform.APPLE,
-        "both": Platform.BOTH,
-    }
-    target = platform_map[platform.lower()]
+    platform_map = {"google": Platform.GOOGLE, "apple": Platform.APPLE, "both": Platform.BOTH}
+    return MainController(config=config, platform=platform_map[platform.lower()])
 
-    # --- Run ---
-    try:
-        controller = MainController(config, platform=target)
-        controller.run()
-    except KeyboardInterrupt:
-        logger.info("\n⏹️  Interrupted by user.")
-        sys.exit(130)
-    except Exception as exc:
-        logger.exception("❌ Unexpected error: %s", exc)
-        sys.exit(1)
 
+# ──────────────────────────────────────────────────────────────────────── #
+#  Subcommands                                                            #
+# ──────────────────────────────────────────────────────────────────────── #
+
+@cli.command()
+@_platform_options
+@click.option("--data", type=click.Path(exists=False), default=None, help="Custom .xlsx file path.")
+@click.pass_context
+def iap(ctx: click.Context, platform: str, dry_run: bool, live: bool, data: str | None) -> None:
+    """Sync In-App Purchases from the spreadsheet to stores."""
+    if data:
+        config = load_config(ctx.obj.get("env_path"))
+        from dataclasses import replace as _replace
+        config = _replace(config, iap_data_file=Path(data).resolve(), data_source="excel")
+
+    controller = _build_controller(ctx, platform, dry_run, live)
+    controller.run_iap()
+
+
+@cli.command()
+@_platform_options
+@click.pass_context
+def listing(ctx: click.Context, platform: str, dry_run: bool, live: bool) -> None:
+    """Sync Store Listing metadata (name, description, keywords)."""
+    controller = _build_controller(ctx, platform, dry_run, live)
+    controller.run_listing()
+
+
+@cli.command()
+@_platform_options
+@click.pass_context
+def screenshots(ctx: click.Context, platform: str, dry_run: bool, live: bool) -> None:
+    """Upload app screenshots to both stores."""
+    controller = _build_controller(ctx, platform, dry_run, live)
+    controller.run_screenshots()
+
+
+# ──────────────────────────────────────────────────────────────────────── #
+#  Entry Point                                                            #
+# ──────────────────────────────────────────────────────────────────────── #
 
 if __name__ == "__main__":
-    main()
+    cli()
